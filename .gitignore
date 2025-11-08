@@ -3,3 +3,6 @@
 ./agentic-rag/.venv/
 ./agentic-rag/chroma_db/
 ./agentic-rag/.env
+./agentic-rag/*.pyc
+./agentic-rag/__pycache__/
+./agentic-rag/.DS_Store
