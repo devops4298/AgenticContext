@@ -1,3 +1,5 @@
 .env
 .env.*
+./agentic-rag/.venv/
+./agentic-rag/chroma_db/
 ./agentic-rag/.env
