@@ -29,8 +29,11 @@ from dotenv import load_dotenv
 
 DEFAULT_MODEL = "gemini-2.0-flash"
 SYSTEM_PROMPT = (
-    "Rewrite the incoming enterprise user query so that it maximises semantic "
-    "retrieval quality. Preserve intent, expand abbreviations, and add key terms."
+    "Rewrite the user query as clear natural language while keeping every important"
+    " keyword, phrase, and CamelCase identifier exactly as provided. If a token looks"
+    " misspelled, append your best guess of the correct spelling in parentheses right"
+    " after the original token (e.g., Jornl (Journal)). You may add clarifying context"
+    " or synonyms, but never remove the original tokens."
 )
 
 
@@ -81,7 +84,7 @@ def rewrite_query(
     *,
     model_name: str = DEFAULT_MODEL,
     system_instruction: str = SYSTEM_PROMPT,
-    temperature: float = 0.3,
+    temperature: float = 0.0,
     max_output_tokens: int = 64,
 ) -> str:
     """Rewrite ``query`` to improve downstream retrieval."""

@@ -1,6 +1,8 @@
 import json
 import sqlite3
+import asyncio
 from datetime import datetime
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -30,6 +32,8 @@ from agents.module6_agentic_rag import (
     handle_query,
     retrieve_relevant_chunks,
 )
+from google.adk.runners import InMemoryRunner
+from agent import root_agent
 
 MODULE1_STAGES = [
     "Chunking",
@@ -41,23 +45,6 @@ MODULE1_STAGES = [
 ]
 
 ENCODER = tiktoken.get_encoding("cl100k_base")
-SUPPORTED_TEXT_SUFFIXES = {
-    ".txt",
-    ".md",
-    ".markdown",
-    ".json",
-    ".jsonl",
-    ".csv",
-    ".py",
-    ".yaml",
-    ".yml",
-    ".ts",
-    ".tsx",
-    ".js",
-    ".jsx",
-    ".html",
-    ".css",
-}
 NOTEBOOK_SUFFIXES = {".ipynb"}
 PDF_SUFFIXES = {".pdf"}
 PPTX_SUFFIXES = {".pptx"}
@@ -70,6 +57,37 @@ BINARY_SKIP_SUFFIXES = {
     ".svg",
     ".mp4",
 }
+MAX_FALLBACK_BYTES = 1_000_000  # 1 MB
+
+
+@st.cache_resource
+def _get_agent_runner() -> InMemoryRunner:
+    return InMemoryRunner(agent=root_agent)
+
+
+def _format_agent_events(events: list) -> str:
+    """Render ADK agent events into markdown for the chat panel."""
+
+    outputs: list[str] = []
+    for event in events:
+        if event.author != root_agent.name:
+            continue
+        if not event.content or not event.content.parts:
+            continue
+        for part in event.content.parts:
+            if getattr(part, "text", None):
+                outputs.append(part.text)
+            elif getattr(part, "function_call", None):
+                payload = json.dumps(part.function_call.args or {}, indent=2)
+                outputs.append(
+                    f"**Tool Call** `{part.function_call.name}`\n```\n{payload}\n```"
+                )
+            elif getattr(part, "function_response", None):
+                payload = json.dumps(part.function_response.response, indent=2)
+                outputs.append(
+                    f"**Tool Response** `{part.function_response.name}`\n```\n{payload}\n```"
+                )
+    return "\n\n".join(outputs).strip() or "_Agent produced no textual response._"
 
 
 def _format_timestamp(epoch_seconds: float) -> str:
@@ -248,11 +266,6 @@ def _load_file_text(path: Path) -> str:
             if source.strip():
                 assembled.append(source)
         return "\n".join(assembled)
-    if suffix in SUPPORTED_TEXT_SUFFIXES:
-        try:
-            return path.read_text("utf-8")
-        except UnicodeDecodeError:
-            return path.read_text("latin-1")
     if suffix in PPTX_SUFFIXES:
         try:
             from pptx import Presentation  # type: ignore
@@ -274,14 +287,33 @@ def _load_file_text(path: Path) -> str:
             raise RuntimeError(
                 "PDF support requires the 'pypdf' package. Install it to ingest PDFs."
             ) from exc
-        reader = PdfReader(str(path))
+        try:
+            reader = PdfReader(str(path))
+        except Exception as exc:
+            raise RuntimeError(f"Failed to parse PDF: {exc}") from exc
         text_parts = [page.extract_text() or "" for page in reader.pages]
         return "\n".join(text_parts)
 
     if suffix in BINARY_SKIP_SUFFIXES:
         return ""
 
-    raise RuntimeError(f"Unsupported file type: {path.suffix}")
+    sample_size = min(MAX_FALLBACK_BYTES, path.stat().st_size)
+    if sample_size <= 0:
+        return ""
+    with path.open("rb") as binary_file:
+        sample = binary_file.read(min(8192, sample_size))
+    if b"\x00" in sample:
+        warnings.warn(f"{path.name}: binary file detected; skipped.", RuntimeWarning)
+        return ""
+    try:
+        return path.read_text("utf-8")
+    except UnicodeDecodeError:
+        try:
+            return path.read_text("utf-8", errors="ignore")
+        except OSError as exc:
+            raise RuntimeError(f"Failed to read file: {exc}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Failed to read file: {exc}") from exc
 
 
 def _collect_documents(source_dir: Path) -> list[tuple[Path, str]]:
@@ -295,7 +327,7 @@ def _collect_documents(source_dir: Path) -> list[tuple[Path, str]]:
         try:
             content = _load_file_text(file_path)
         except RuntimeError as exc:
-            st.warning(f"{file_path.name}: {exc}")
+            st.info(f"{file_path.name}: {exc}")
             continue
         if not content.strip():
             st.info(f"{file_path.name}: empty or unreadable, skipped.")
@@ -413,8 +445,8 @@ def main() -> None:
     _render_status_overview(stats)
     st.divider()
 
-    console_tab, vector_tab, memory_tab = st.tabs(
-        ["Pipeline Console", "Vector Store", "Feedback Memory"]
+    console_tab, vector_tab, memory_tab, chat_tab = st.tabs(
+        ["Pipeline Console", "Vector Store", "Feedback Memory", "Agent Chat"]
     )
 
     with console_tab:
@@ -489,12 +521,52 @@ def main() -> None:
         history = _load_feedback_log(DEFAULT_LOG_PATH)
         _render_memory_summary(history)
 
-    st.markdown(
-        "Examples and UI inspiration adapted from the OpenAI Cookbook sample apps,"
-        " including the Streamlit chat demos ([openai/openai-cookbook – examples]"
-        "(https://github.com/openai/openai-cookbook/tree/main/examples))."
-    )
+    with chat_tab:
+        st.subheader("Ask the Agent")
+        st.caption(
+            "Chat with the Agentic RAG assistant. The agent runs the full pipeline on each question "
+            "and cites the supporting context when available."
+        )
 
+        chat_state = st.session_state.setdefault("agent_chat_history", [])
+        for message in chat_state:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        prompt = st.chat_input("Type your question")
+        if prompt:
+            chat_state.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Consulting the vector store..."):
+                    runner = _get_agent_runner()
+                    try:
+                        events = asyncio.run(
+                            runner.run_debug(
+                                prompt,
+                                user_id="streamlit_user",
+                                session_id="streamlit_chat",
+                                quiet=True,
+                            )
+                        )
+                    except Exception as exc:  # pragma: no cover - runtime feedback
+                        error_msg = f"Agent execution failed: {exc}"
+                        st.error(error_msg)
+                        chat_state.append({"role": "assistant", "content": error_msg})
+                    else:
+                        agent_reply = _format_agent_events(events)
+                        st.markdown(agent_reply)
+                        chat_state.append({"role": "assistant", "content": agent_reply})
+
+        if st.button("Clear conversation", key="clear_agent_chat"):
+            st.session_state["agent_chat_history"] = []
+            _get_agent_runner.clear()
+            if hasattr(st, "rerun"):
+                st.rerun()
+            elif hasattr(st, "experimental_rerun"):  # pragma: no cover - legacy fallback
+                st.experimental_rerun()
 
 if __name__ == "__main__":
     main()

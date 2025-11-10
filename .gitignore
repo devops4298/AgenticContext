@@ -6,3 +6,4 @@
 ./agentic-rag/*.pyc
 ./agentic-rag/__pycache__/
 ./agentic-rag/.DS_Store
+.DS_Store

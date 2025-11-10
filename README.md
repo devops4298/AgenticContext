@@ -1,161 +1,190 @@
-# 🧠 Agentic RAG Framework
+# Agentic RAG + Playwright Control  
 
-A hands-on implementation of a **Context-Engineered Retrieval-Augmented Generation (RAG)** system built with the **Google Agent Development Kit (ADK)** and an open-source vector store (Chroma). The project follows the Weaviate "Context Engineering" methodology: treat context as a managed supply chain—plan it, encode it, retrieve it, assemble it, reason over it, and capture user feedback to keep improving.
+<p align="center">
+  <img src="https://img.shields.io/badge/Google%20ADK-ready-success?style=for-the-badge" alt="Google ADK Ready" />
+  <img src="https://img.shields.io/badge/Gemini-embeddings-5f9ea0?style=for-the-badge" alt="Gemini Embeddings" />
+  <img src="https://img.shields.io/badge/Playwright-MCP-blueviolet?style=for-the-badge" alt="Playwright MCP" />
+  <img src="https://img.shields.io/badge/Streamlit-dashboard-ff4b4b?style=for-the-badge" alt="Streamlit Dashboard" />
+</p>
+
+> **A production-ready context-engineering workspace.**  
+> Blend Gemini-powered retrieval, ADK agents, and Playwright automation—controlled either from a Streamlit console or the ADK CLI.
 
 ---
 
-## 📦 What You Get
+## 📌 Quick Links
 
-- Modular ADK tools for chunking, embedding, query rewriting, context assembly, reasoning, and feedback capture.
-- A Streamlit console that visualises the entire pipeline, including vector-store health and memory snapshots.
-- Utility scripts and optional ingestion helpers so you can index your own document sets.
-- A feedback loop (`memory_log.json`) that records user signals for later reuse.
+- [Why This Stack](#-why-this-stack)
+- [Architecture](#-architecture)
+- [Key Capabilities](#-key-capabilities)
+- [Prerequisites](#-prerequisites)
+- [Setup Guide](#-setup-guide)
+- [Embedding Pipeline](#-embedding-pipeline)
+- [Streamlit Agent Chat](#-streamlit-agent-chat)
+- [Troubleshooting](#-troubleshooting)
+- [Repository Map](#-repository-map)
+- [Roadmap & Credits](#-roadmap--credits)
 
 ---
 
-## 🏗️ High-Level Architecture
+## 🤖 Why This Stack
+
+| Need | How it’s solved |
+|------|-----------------|
+| High-quality RAG | Gemini `text-embedding-004` + ChromaDB |
+| Multi-tool orchestration | Google ADK agents & instructions |
+| Rich UI for ops teams | Streamlit console & agent chat |
+| UI automation | Playwright MCP (`npx -y @playwright/mcp`) baked into the agent |
+
+---
+
+## 🗺️ Architecture
 
 ```
-User Query → QueryRewriterTool → VectorRetrieverTool → ContextComposerTool
-          → LLM Reasoning (Gemini) → MemoryManagerTool → Feedback Log
+User Request
+   ├─▶ Module 4 · Query Rewriter (Gemini)
+   ├─▶ Module 3 · Vector Retrieval (Chroma)
+   ├─▶ Module 5 · Context Composer (token budget aware)
+   ├─▶ Module 6 · LLM Reasoning (Gemini)
+   └─▶ Module 7 · Feedback Logger (optional audit trail)
+
+Optional Toolsets
+   ├─▶ Playwright MCP Toolset (browser automation via `npx -y @playwright/mcp`)
+   └─▶ Extend with additional ADK toolsets as needed
 ```
 
-Each stage is an **ADK Tool** or **Agent**:
-
-| Stage | Module | Tool/Agent | Description |
-|-------|--------|------------|-------------|
-| 1 | Module 1 | `ContextPlannerAgent` | Plans the context flow (foundational design patterns). |
-| 2 | Module 2 | `chunker_tool` | Splits documents into overlapping, token-aware chunks. |
-| 3 | Module 3 | `embedder_tool` | Generates Gemini embeddings and persists to Chroma. |
-| 4 | Module 4 | `query_rewriter_tool` | Rewrites/expands natural-language queries. |
-| 5 | Module 5 | `context_composer_tool` | Creates a constrained context window for the reasoner. |
-| 6 | Module 6 | `ContextOrchestratorAgent` | Orchestrates the full RAG pipeline. |
-| 7 | Module 7 | `memory_manager_tool` | Stores user feedback in `memory_log.json`. |
+- Root ADK agent: [`agentic-rag/agent.py`](agentic-rag/agent.py)
+- Embedding & ingestion: [`tools/module3_embedder_tool.py`](agentic-rag/tools/module3_embedder_tool.py)
+- Query rewrite with typo support: [`tools/module4_query_rewriter_tool.py`](agentic-rag/tools/module4_query_rewriter_tool.py)
+- Full pipeline orchestrator: [`agents/module6_agentic_rag.py`](agentic-rag/agents/module6_agentic_rag.py)
 
 ---
 
-## ⚙️ Prerequisites
+## ✨ Key Capabilities
 
-- macOS / Linux (ARM64 or x86_64; instructions below assume ARM64 macOS).
+| Capability | What you get |
+|------------|--------------|
+| **Streamlit Console** | Rebuild embeddings, inspect retrieved chunks, monitor vector health, capture feedback. |
+| **Agent Chat** | Fully agent-driven workflow (RAG → script draft → user confirmation → Playwright MCP run). |
+| **Gemini Embeddings** | Document ingestion + query embeddings through Gemini `text-embedding-004`; typo-tolerant rewrites. |
+| **Playwright MCP** | Launches `npx -y @playwright/mcp`, executes `browser_*` functions, returns JSON responses + screenshots. |
+| **Programmatic Access** | Import `root_agent` or the RAG modules directly for integration tests or pipelines. |
+
+---
+
+## 🛠️ Prerequisites
+
+- macOS / Linux (ARM64 tested on macOS Sequoia).
 - Python 3.10 or 3.11.
-- Google ADK (see [ADK Quickstart](https://cloud.google.com/agent-builder/docs)).
-- Gemini API Key (`GOOGLE_AI_API_KEY`) or Vertex AI credentials.
-- (Optional) OpenAI key if you want to experiment with OpenAI models.
+- Node.js ≥ 18.
+- Google ADK installed (`pip install google-adk`).
+- Gemini credentials via API key *or* Vertex AI project.
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Setup Guide
 
 ### 1. Clone & Install
-
 ```bash
-# Clone the repository
-cd /Users/chetanchauhan/Agentic
 git clone https://github.com/your-org/agentic-rag-context-engineering.git AgenticContext
 cd AgenticContext
 
-# Install Python dependencies (ARM-compatible wheels)
 pip install --upgrade pip setuptools wheel
 pip install -r agentic-rag/requirements.txt
 ```
 
-The requirements include:
-
-- `google-adk`
-- `chromadb`
-- `google-genai` (Gemini client)
-- `python-pptx`, `lxml` (for slide ingestion)
-- `streamlit`
-
-> **Note:** If you see architecture mismatches (x86_64 vs arm64), reinstall the offending packages with `pip install --force-reinstall {package-name} --platform=macosx-11.0-arm64`.
-
-### 2. Environment Variables (.env)
-
-The app reads credentials from `agentic-rag/.env`. Create it if it does not exist:
-
+### 2. Configure Environment
 ```ini
 # agentic-rag/.env
 GOOGLE_AI_API_KEY=your_gemini_key
-# Optional Vertex AI credentials
-GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/vertex/key.json
+# OR
+VERTEX_AI_PROJECT_ID=your_project
+GOOGLE_CLOUD_REGION=us-central1
 
-# Optional: OpenAI if you experiment with other LLMs
-OPENAI_API_KEY=your_openai_key
+# Optional extras
+OPENAI_API_KEY=...
 ```
 
-Ensure `.env` files stay out of git—the repository now includes a root `.gitignore` covering them.
+### 3. Verify Playwright MCP (one-time)
+```bash
+npx -y @playwright/mcp --help
+```
 
-### 3. Prepare Documents (Optional)
-
-The Streamlit console can ingest any text/PDF/Markdown/CSV/notebook folder. For a large sample, download the [OpenAI Cookbook](https://github.com/openai/openai-cookbook) and point the UI to `examples/`. To test quickly, keep the default sample documents under `agentic-rag/data/sample_docs/`.
-
----
-
-## 🖥️ Running the Streamlit Console
-
+### 4. Streamlit Control Plane
 ```bash
 cd agentic-rag
 streamlit run app.py
 ```
+Choose your source folder in the sidebar (e.g. `/Users/.../orebishopping/src`) and click **Rebuild Vector Store**.
 
-The UI contains three tabs:
-
-1. **Pipeline Console** – run the RAG workflow on any query, inspect the rewritten query, retrieved chunks, assembled context, and final answer, then log feedback.
-2. **Vector Store** – observe vector counts, collection totals, last update, and rebuild embeddings from the sidebar.
-3. **Feedback Memory** – review logged interactions (`memory_log.json`) with aggregated sentiment counts.
-
-### Sidebar Controls
-
-- **Top-K Retrieval / Context Token Budget** sliders tune the pipeline before each run.
-- **Source Folder** + **Rebuild Vector Store** trigger ingestion. The console supports:
-  - `.txt`, `.md`, `.markdown`, `.json`, `.jsonl`, `.csv`, `.py`, `.yaml`, `.yml`, `.ts`, `.tsx`, `.js`, `.jsx`, `.html`, `.css`
-  - `.ipynb` (Markdown + code cells concatenated)
-  - `.pdf` (requires `pypdf`)
-  - `.pptx` (requires `python-pptx`)
-  - Binary assets such as `.png`, `.jpg`, `.mp4` are skipped automatically.
-
-While rebuilding, the spinner stays visible until embedding completes. For very large folders, consider pre-ingesting via a script (see below).
-
----
-
-## 🛠️ Command-Line Utilities
-
-### Manual Mini-Ingest (sample snippets)
-
-```python
-from pathlib import Path
-from tools.module2_chunker_tool import adaptive_chunk
-from tools.module3_embedder_tool import embed_and_store, reset_vector_store
-
-SOURCE_DIR = Path('/path/to/folder')
-texts = []
-metas = []
-for file_path in SOURCE_DIR.rglob('*.md'):
-    text = file_path.read_text('utf-8')
-    for idx, chunk in enumerate(adaptive_chunk(text)):
-        texts.append(chunk)
-        metas.append({'source_path': str(file_path), 'chunk_index': idx})
-
-reset_vector_store(drop_storage=True)
-embed_and_store(texts, metadata_list=metas)
-```
-
-### Running the Orchestrator Agent Directly
-
+### 5. ADK CLI Agent
 ```bash
-python agents/module6_agentic_rag.py
+adk run agentic-rag
 ```
-This performs a demo query (`"What is the policy for remote work?"`) and prints the retrieved chunks, context, and answer.
+The CLI follows the same instruction flow as the Streamlit chat.
+
+### 6. Programmatic Usage
+```python
+from agentic_rag.agent import root_agent
+from google.adk.runners import InMemoryRunner
+
+runner = InMemoryRunner(agent=root_agent)
+events = await runner.run_debug(
+    "create a playwright script for ...",
+    user_id="dev",
+    session_id="dev_session",
+    quiet=True,
+)
+```
+`root_agent` bundles:
+- `rag_answer_tool` (Gemini-driven RAG flow)
+- Playwright MCP toolset (`playwright__*` functions)
+
+Instructions in `agent.py` enforce the order: RAG first → script draft → explicit user approval → MCP execution.
 
 ---
 
-## 📁 Repository Layout
+## 🧬 Embedding Pipeline
+
+- **Model**: Gemini `text-embedding-004`.
+- **Persistence**: ChromaDB (`agentic-rag/chroma_db`).
+- **Ingestion**: `_ingest_directory()` handles Markdown, code, CSV, JSON, PDF (`pypdf`), PPTX (`python-pptx`), notebooks, etc. Binary assets trigger a logged warning and are skipped.
+- **Query Flow**: `handle_query()` rewrites the question, embeds it, retrieves top-K matches, composes context, and reasons with Gemini.
+- **Credentials**: Make sure `GOOGLE_AI_API_KEY` or `VERTEX_AI_*` env vars are set before running ingestion or queries.
+
+---
+
+## 💬 Streamlit Agent Chat
+
+- Uses a cached `InMemoryRunner` to keep ADK session state across chat turns. “Clear conversation” resets both UI and agent state.
+- Agent output includes:
+  1. RAG summary + evidence.
+  2. Drafted Playwright TypeScript (with selectors derived from context).
+  3. Awaiting user confirmation (“run it”, “execute”, etc.).
+  4. Playwright MCP tool calls/responses (navigate, click, fill, screenshot).
+- Tool events are rendered with their JSON payloads for easy debugging.
+
+---
+
+## 🛟 Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| Streamlit spinner never ends | Large folders can take minutes; watch the terminal logs. To iterate faster, set `st.session_state["_ingest_file_limit"]`. |
+| “No supporting context found” | Rebuild the vector store and confirm the rewriter appended typo corrections (`Jornl (Journal)`). |
+| Playwright MCP warnings (`cancel scope`) | Known anyio behaviour—noise only. |
+| `npx` can’t find the package | Use `@playwright/mcp` (not `@microsoft/...`). Ensure Node ≥ 18. |
+| ARM vs x86 wheels | Reinstall with `pip install --force-reinstall <pkg> --platform=macosx-11.0-arm64`. |
+
+---
+
+## 🗂️ Repository Map
 
 ```
 agentic-rag/
-├── app.py                     # Streamlit dashboard
+├── agent.py                  # Root ADK agent (Gemini + Playwright MCP)
+├── app.py                    # Streamlit console & agent chat
 ├── agents/
-│   ├── module1_context_planner_agent.py
 │   └── module6_agentic_rag.py
 ├── tools/
 │   ├── module2_chunker_tool.py
@@ -163,53 +192,29 @@ agentic-rag/
 │   ├── module4_query_rewriter_tool.py
 │   ├── module5_context_composer_tool.py
 │   └── module7_memory_manager_tool.py
-├── data/
-│   └── sample_docs/
-├── memory_log.json            # Feedback log (JSON)
-├── chroma_db/                 # Persistent Chroma vector store
-└── requirements.txt
+├── chroma_db/                # Vector persistence
+├── data/sample_docs/
+└── memory_log.json
 ```
 
 ---
 
-## 🧠 Feedback & Memory Loop
+## 🔭 Roadmap & Credits
 
-- Each console run optionally writes an entry to `memory_log.json` via `store_feedback`.
-- Feedback is currently an **audit trail**; the live pipeline does not yet re-inject these memories.
-- To leverage them, you can load the positive entries in `handle_query` before invoking the reasoner.
+**Next up**
+- Feed positive feedback back into retrieval.
+- Automated evaluation suites (OpenAI Evals, Playwright metrics).
+- Package as an ADK app for Cloud Run / GKE deployment.
+- Extend to multimodal ingestion and cross-lingual embeddings.
 
----
-
-## 🧪 Troubleshooting
-
-| Issue | Fix |
-|-------|-----|
-| **Streamlit shows architecture mismatch (`x86_64` vs `arm64`)** | Reinstall the package with an ARM wheel, e.g. `pip install --force-reinstall lxml==5.4.0 --platform=macosx_11_0_arm64` |
-| **`pyarrow` ImportError** | The UI now avoids `st.dataframe`; if you still need `pyarrow`, install the ARM version explicitly. |
-| **Ingestion Spinner Never Stops** | Large folders can take minutes. Check the terminal logs for Gemini rate limits or use a smaller subset via `_ingest_file_limit`. |
-| **Empty results (`I cannot find relevant information`)** | Verify Chroma contains vectors (Vector Store tab). Rebuild embeddings if the count is zero. |
-| **`python-pptx` missing** | Install with `pip install python-pptx` and ensure `lxml` uses the correct architecture. |
+**Credits**
+- Google ADK team for the agent framework.
+- ChromaDB for the vector store backbone.
+- Playwright MCP (`@playwright/mcp`) for browser automation.
+- Inspiration from Weaviate Context Engineering & OpenAI Cookbook examples.
 
 ---
 
-## 🧭 Roadmap / Ideas
-
-- Reuse positive feedback as supplemental context during retrieval.
-- Add automated evaluator (e.g., OpenAI Evals) to grade responses.
-- Integrate telemetry dashboards (latency, recall/precision).
-- Package as an ADK endpoint or Docker image.
-- Extend to multi-modal (image/PDF embeddings) or cross-lingual retrieval.
-
----
-
-## 📚 References & Credits
-
-- [Google Agent Development Kit](https://cloud.google.com/agent-builder/docs)
-- [ChromaDB](https://docs.trychroma.com/)
-- [Weaviate Context Engineering Guide](https://weaviate.io/blog/context-engineering)
-- [Streamlit](https://streamlit.io/)
-- [OpenAI Cookbook](https://github.com/openai/openai-cookbook)
-
-> Author: **Chetan Chauhan** · Version 1.0.0 · License: Apache-2.0
-
-Happy building! Feel free to file issues or suggestions as you explore the Agentic RAG framework. ✨
+**Maintainer**: Chetan Chauhan  
+**License**: Apache-2.0  
+Questions or suggestions? Open an issue or start a discussion. Happy building! 🚀
