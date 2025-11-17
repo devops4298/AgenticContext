@@ -46,46 +46,130 @@ if 'folder_path' not in st.session_state:
     st.session_state.folder_path = None
 if 'index_loaded' not in st.session_state:
     st.session_state.index_loaded = False
+if 'index_metadata' not in st.session_state:
+    st.session_state.index_metadata = None
 if 'query_history' not in st.session_state:
     st.session_state.query_history = []
 if 'generated_scripts' not in st.session_state:
     st.session_state.generated_scripts = []
 
 
-def initialize_pipeline_from_folder(folder_path: str, force_reindex: bool = False):
-    """Initialize RAG pipeline from a local folder path."""
+def auto_load_existing_index():
+    """Automatically load existing index on app startup."""
+    try:
+        import json
+        import os
+        from rag_config import DEFAULT_INDEX_METADATA_PATH, DEFAULT_CACHE_DIR
+        
+        # Check if index metadata exists
+        if os.path.exists(DEFAULT_INDEX_METADATA_PATH):
+            with open(DEFAULT_INDEX_METADATA_PATH, "r") as f:
+                index_metadata = json.load(f)
+            
+            st.session_state.index_metadata = index_metadata
+            indexed_source = index_metadata.get("indexed_source", "")
+            indexed_path = index_metadata.get("indexed_folder_path", "")
+            repo_url = index_metadata.get("repo_url", "")
+            
+            # Try to load pipeline from cache
+            if indexed_source == "local_folder" and indexed_path:
+                st.session_state.folder_path = indexed_path
+                cfg = AppConfig()
+                pipeline = RAGPipeline(cfg)
+                
+                # Load from cache without validation (we trust existing metadata)
+                if pipeline.load_from_cache(expected_folder_path=None):  # Don't validate, just load
+                    if pipeline.metadata and pipeline.indexer.index:
+                        st.session_state.pipeline = pipeline
+                        st.session_state.index_loaded = True
+                        
+                        # Initialize orchestrator
+                        if not st.session_state.orchestrator:
+                            st.session_state.orchestrator = OrchestratorAgent(cfg)
+                        
+                        return True
+            
+            elif indexed_source == "github_repo" and repo_url:
+                st.session_state.repo_url = repo_url
+                cfg = AppConfig()
+                pipeline = RAGPipeline(cfg)
+                
+                # Load from cache
+                if pipeline.load_from_cache(expected_folder_path=None):
+                    if pipeline.metadata and pipeline.indexer.index:
+                        st.session_state.pipeline = pipeline
+                        st.session_state.index_loaded = True
+                        
+                        # Initialize orchestrator
+                        if not st.session_state.orchestrator:
+                            st.session_state.orchestrator = OrchestratorAgent(cfg)
+                        
+                        return True
+        
+        return False
+    except Exception as e:
+        # Silently fail on auto-load - user can manually load
+        return False
+
+
+# Auto-load existing index on startup
+if st.session_state.pipeline is None and not st.session_state.index_loaded:
+    auto_load_existing_index()
+
+
+def initialize_pipeline_from_folder(folder_path: str, force_reindex: bool = False, incremental: bool = False):
+    """Initialize RAG pipeline from a local folder path.
+    
+    Args:
+        folder_path: Path to folder to index
+        force_reindex: If True, delete existing index and reindex from scratch
+        incremental: If True, add new files to existing index (not implemented yet, treats as new index)
+    """
     try:
         with st.spinner("Initializing RAG pipeline from folder..."):
             cfg = AppConfig()
             pipeline = RAGPipeline(cfg)
             
             if force_reindex:
-                with st.spinner(f"Indexing folder: {folder_path}..."):
+                # Clear existing index and start fresh
+                with st.spinner(f"Clearing existing index and indexing folder: {folder_path}..."):
                     pipeline.ingest_folder(folder_path, reindex=True)
                 st.success(f"✅ Folder indexed successfully! ({len(pipeline.metadata)} chunks)")
                 st.session_state.index_loaded = True
             else:
+                # Check if cache matches this folder
                 cache_loaded = pipeline.load_from_cache(expected_folder_path=folder_path)
                 if cache_loaded and pipeline.metadata and pipeline.indexer.index:
-                    st.success(f"✅ Loaded cache: {len(pipeline.metadata)} chunks")
+                    st.success(f"✅ Loaded existing index: {len(pipeline.metadata)} chunks")
                     st.session_state.index_loaded = True
                 else:
-                    if cache_loaded == False:
-                        st.info(f"📂 Cache doesn't match folder '{folder_path}'. Re-indexing...")
+                    # Cache doesn't match or doesn't exist - need to decide: replace or add?
+                    if cache_loaded == False and st.session_state.index_loaded:
+                        # We have a different index loaded - ask what to do
+                        st.warning(f"⚠️ Different index found. Use 'Replace Index' to reindex this folder.")
+                        return None
                     else:
+                        # No existing index or first time - just index
                         st.info(f"📂 Indexing folder: {folder_path}...")
-                    with st.spinner("Indexing..."):
-                        try:
-                            pipeline.ingest_folder(folder_path, reindex=True)
-                            st.success(f"✅ Folder indexed successfully! ({len(pipeline.metadata)} chunks)")
-                            st.session_state.index_loaded = True
-                        except Exception as e:
-                            st.error(f"❌ Error indexing folder: {str(e)}")
-                            st.exception(e)
-                            return None
+                        with st.spinner("Indexing..."):
+                            try:
+                                pipeline.ingest_folder(folder_path, reindex=True)
+                                st.success(f"✅ Folder indexed successfully! ({len(pipeline.metadata)} chunks)")
+                                st.session_state.index_loaded = True
+                            except Exception as e:
+                                st.error(f"❌ Error indexing folder: {str(e)}")
+                                st.exception(e)
+                                return None
             
             st.session_state.pipeline = pipeline
             st.session_state.folder_path = folder_path
+            
+            # Update index metadata in session state
+            import json
+            import os
+            if os.path.exists(cfg.index_metadata_path):
+                with open(cfg.index_metadata_path, "r") as f:
+                    st.session_state.index_metadata = json.load(f)
             
             # Initialize orchestrator agent (root_agent)
             if not st.session_state.orchestrator:
@@ -158,13 +242,11 @@ def query_with_orchestrator(user_query: str, generate_script: bool = False):
     
     try:
         with st.spinner("Orchestrating request..."):
-            # First, get context from RAG system if needed
+            # Always get context from RAG system for better script generation
             rag_context = None
-            if generate_script or "automate" in user_query.lower() or "playwright" in user_query.lower():
-                # Query RAG for relevant context
-                with st.spinner("Retrieving context from indexed documents..."):
-                    rag_result = st.session_state.pipeline.query(user_query, top_k=40)
-                    rag_context = rag_result
+            with st.spinner("Retrieving context from indexed documents..."):
+                rag_result = st.session_state.pipeline.query(user_query, top_k=40)
+                rag_context = rag_result
             
             # Use orchestrator to coordinate agents and generate script if needed
             result = st.session_state.orchestrator.orchestrate(
@@ -172,6 +254,22 @@ def query_with_orchestrator(user_query: str, generate_script: bool = False):
                 rag_context=rag_context,
                 rag_pipeline=st.session_state.pipeline
             )
+            
+            # If script generation was requested but not generated, force it
+            if generate_script and not result.get("generated_script"):
+                with st.spinner("Generating Playwright script..."):
+                    script_context = result.get("enhanced_context", "")
+                    if not script_context and rag_context:
+                        script_context = st.session_state.orchestrator._format_rag_result_for_script_generation(rag_context)
+                    
+                    generated_script = st.session_state.orchestrator.generate_playwright_script(
+                        user_request=user_query,
+                        context=script_context,
+                        script_type="interaction"
+                    )
+                    result["generated_script"] = generated_script
+                    if not result.get("response"):
+                        result["response"] = "Generated Playwright script based on your request and retrieved context."
             
             return result
     except Exception as e:
@@ -184,9 +282,53 @@ def query_with_orchestrator(user_query: str, generate_script: bool = False):
 with st.sidebar:
     st.header("⚙️ Configuration")
     
+    # Show current index status
+    if st.session_state.index_metadata:
+        st.subheader("📊 Current Index")
+        metadata = st.session_state.index_metadata
+        indexed_source = metadata.get("indexed_source", "unknown")
+        if indexed_source == "local_folder":
+            indexed_path = metadata.get("indexed_folder_path", "")
+            num_chunks = metadata.get("num_chunks", 0)
+            num_files = metadata.get("num_files", 0)
+            indexed_at = metadata.get("indexed_at", "")
+            st.success(f"✅ **Indexed:** `{os.path.basename(indexed_path) if indexed_path else 'Unknown'}`")
+            st.caption(f"📍 {indexed_path[:50]}..." if len(indexed_path) > 50 else f"📍 {indexed_path}")
+            if num_chunks:
+                st.metric("Chunks", num_chunks)
+            if num_files:
+                st.metric("Files", num_files)
+            if indexed_at:
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(indexed_at.replace('Z', '+00:00'))
+                    st.caption(f"Indexed: {dt.strftime('%Y-%m-%d %H:%M')}")
+                except:
+                    st.caption(f"Indexed: {indexed_at[:19]}")
+        elif indexed_source == "github_repo":
+            repo_url = metadata.get("repo_url", "")
+            num_chunks = metadata.get("num_chunks", 0)
+            indexed_at = metadata.get("indexed_at", "")
+            st.success(f"✅ **Indexed:** GitHub Repository")
+            st.caption(f"🔗 {repo_url}")
+            if num_chunks:
+                st.metric("Chunks", num_chunks)
+            if indexed_at:
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(indexed_at.replace('Z', '+00:00'))
+                    st.caption(f"Indexed: {dt.strftime('%Y-%m-%d %H:%M')}")
+                except:
+                    st.caption(f"Indexed: {indexed_at[:19]}")
+        
+        st.divider()
+    
+    # Index Management
+    st.subheader("📂 Index Management")
+    
     # Input mode selection
     input_mode = st.radio(
-        "Input Mode",
+        "Index Source",
         ["📁 Local Folder", "🌐 GitHub URL"],
         help="Choose to index from a local folder or clone from GitHub"
     )
@@ -203,18 +345,40 @@ with st.sidebar:
         
         col1, col2 = st.columns(2)
         with col1:
-            load_btn = st.button("📂 Index Folder", type="primary", use_container_width=True)
+            if st.session_state.index_loaded:
+                load_btn = st.button("➕ Add to Index", use_container_width=True, 
+                                    help="Add files from this folder to existing index")
+            else:
+                load_btn = st.button("📂 Index Folder", type="primary", use_container_width=True,
+                                    help="Create new index from this folder")
         with col2:
-            reindex_btn = st.button("🔄 Reindex", use_container_width=True)
+            replace_btn = st.button("🔄 Replace Index", use_container_width=True,
+                                   help="Delete existing index and create new one from this folder")
         
-        if load_btn or reindex_btn:
-            st.session_state.pipeline = None
-            st.session_state.index_loaded = False
-            st.session_state.repo_url = None
+        if load_btn:
             if folder_path:
                 st.session_state.folder_path = folder_path
                 if os.path.exists(folder_path) and os.path.isdir(folder_path):
-                    initialize_pipeline_from_folder(folder_path, force_reindex=reindex_btn)
+                    # If index exists, check if same folder
+                    if st.session_state.index_loaded and st.session_state.index_metadata:
+                        current_path = st.session_state.index_metadata.get("indexed_folder_path", "")
+                        if os.path.abspath(folder_path) == os.path.abspath(current_path):
+                            st.info("ℹ️ This folder is already indexed. Use 'Replace Index' to reindex.")
+                        else:
+                            st.warning("⚠️ Different folder. Use 'Replace Index' to switch to this folder.")
+                    else:
+                        # No existing index or different - create new
+                        initialize_pipeline_from_folder(folder_path, force_reindex=False)
+                else:
+                    st.error(f"❌ Folder not found: {folder_path}")
+            else:
+                st.error("Please enter a folder path")
+        
+        if replace_btn:
+            if folder_path:
+                st.session_state.folder_path = folder_path
+                if os.path.exists(folder_path) and os.path.isdir(folder_path):
+                    initialize_pipeline_from_folder(folder_path, force_reindex=True)
                 else:
                     st.error(f"❌ Folder not found: {folder_path}")
             else:
@@ -229,27 +393,60 @@ with st.sidebar:
         
         col1, col2 = st.columns(2)
         with col1:
-            load_btn = st.button("📂 Load/Index", use_container_width=True)
+            if st.session_state.index_loaded:
+                load_btn = st.button("📂 Load Index", use_container_width=True,
+                                    help="Load existing index for this repository")
+            else:
+                load_btn = st.button("📂 Index Repo", type="primary", use_container_width=True,
+                                    help="Create new index from this repository")
         with col2:
-            reindex_btn = st.button("🔄 Reindex", use_container_width=True)
+            replace_btn = st.button("🔄 Replace Index", use_container_width=True,
+                                   help="Delete existing index and create new one from this repository")
         
         if load_btn:
-            st.session_state.pipeline = None
-            st.session_state.index_loaded = False
-            st.session_state.folder_path = None
             if repo_url:
-                initialize_pipeline(repo_url, force_reindex=False)
+                if st.session_state.index_loaded and st.session_state.index_metadata:
+                    current_repo = st.session_state.index_metadata.get("repo_url", "")
+                    if repo_url == current_repo:
+                        st.info("ℹ️ This repository is already indexed. Use 'Replace Index' to reindex.")
+                    else:
+                        st.warning("⚠️ Different repository. Use 'Replace Index' to switch to this repository.")
+                else:
+                    initialize_pipeline(repo_url, force_reindex=False)
             else:
                 st.error("Please enter a repository URL")
         
-        if reindex_btn:
-            st.session_state.pipeline = None
-            st.session_state.index_loaded = False
-            st.session_state.folder_path = None
+        if replace_btn:
             if repo_url:
                 initialize_pipeline(repo_url, force_reindex=True)
             else:
                 st.error("Please enter a repository URL")
+    
+    # Clear Index Option
+    if st.session_state.index_loaded:
+        st.divider()
+        if st.button("🗑️ Clear Index", use_container_width=True, type="secondary",
+                    help="Clear current index and start fresh"):
+            import shutil
+            from rag_config import DEFAULT_CACHE_DIR
+            try:
+                # Clear session state
+                st.session_state.pipeline = None
+                st.session_state.index_loaded = False
+                st.session_state.index_metadata = None
+                st.session_state.folder_path = None
+                st.session_state.repo_url = None
+                st.session_state.orchestrator = None
+                
+                # Clear cache directory
+                if os.path.exists(DEFAULT_CACHE_DIR):
+                    shutil.rmtree(DEFAULT_CACHE_DIR)
+                    os.makedirs(DEFAULT_CACHE_DIR, exist_ok=True)
+                
+                st.success("✅ Index cleared successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error clearing index: {str(e)}")
     
     st.divider()
     
@@ -276,18 +473,18 @@ with st.sidebar:
     st.divider()
     
     # Pipeline status
-    st.subheader("📊 Status")
-    if st.session_state.pipeline:
-        st.success("✅ Pipeline Ready")
+    st.subheader("🔧 Status")
+    if st.session_state.pipeline and st.session_state.index_loaded:
+        st.success("✅ **Pipeline Ready**")
         if st.session_state.orchestrator:
-            st.success("✅ Orchestrator Agent Ready")
-        if st.session_state.index_loaded or st.session_state.pipeline.metadata:
+            st.success("✅ **Orchestrator Ready**")
+        if st.session_state.pipeline.metadata:
             num_chunks = len(st.session_state.pipeline.metadata)
             st.metric("Total Chunks", num_chunks)
             if st.session_state.pipeline.indexer.index:
                 st.metric("Index Size", st.session_state.pipeline.indexer.index.ntotal)
     else:
-        st.warning("⚠️ Pipeline Not Loaded")
+        st.info("ℹ️ **No index loaded** - Index a folder or repository to get started")
 
 
 # Main content area
@@ -301,10 +498,20 @@ if not api_key or api_key == "your-api-key-here":
     st.stop()
 
 # Current source info
-if st.session_state.folder_path:
+if st.session_state.index_loaded and st.session_state.index_metadata:
+    metadata = st.session_state.index_metadata
+    if metadata.get("indexed_source") == "local_folder":
+        indexed_path = metadata.get("indexed_folder_path", "")
+        st.success(f"📁 **Indexed Folder:** `{indexed_path}` | **Chunks:** {metadata.get('num_chunks', 0)}")
+    elif metadata.get("indexed_source") == "github_repo":
+        repo_url = metadata.get("repo_url", "")
+        st.success(f"📚 **Indexed Repository:** `{repo_url}` | **Chunks:** {metadata.get('num_chunks', 0)}")
+elif st.session_state.folder_path:
     st.info(f"📁 Current Folder: `{st.session_state.folder_path}`")
 elif st.session_state.repo_url:
     st.info(f"📚 Current Repository: `{st.session_state.repo_url}`")
+else:
+    st.info("ℹ️ **No index loaded.** Use the sidebar to index a folder or repository.")
 
 # Query input
 st.subheader("💬 Ask a Question or Request Playwright Script")

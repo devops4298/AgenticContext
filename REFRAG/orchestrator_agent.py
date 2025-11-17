@@ -195,13 +195,46 @@ INSTRUCTIONS:
                         # Use RAG result to enhance context
                         enhanced_context = self._format_rag_result_for_script_generation(rag_result)
                         result["enhanced_context"] = enhanced_context
+                        # Update rag_context for script generation
+                        rag_context = rag_result
             
-            # Generate final response or script
-            if any(fc["name"] == "generate_playwright_script" for fc in result["function_calls"]):
-                script_result = self._generate_playwright_script_from_function_call(
-                    user_query, result.get("enhanced_context", context_part), result["function_calls"]
-                )
+            # Auto-generate script if user explicitly requests it and we have context
+            should_generate_script = (
+                any(fc["name"] == "generate_playwright_script" for fc in result["function_calls"]) or
+                ("playwright" in user_query.lower() or "script" in user_query.lower() or "automate" in user_query.lower())
+            )
+            
+            # Generate Playwright script if requested
+            if should_generate_script:
+                # Prepare context for script generation
+                script_context = result.get("enhanced_context", "")
+                if rag_context:
+                    if not script_context:
+                        script_context = self._format_rag_result_for_script_generation(rag_context)
+                
+                # If we have function call with args, use them; otherwise infer from query
+                script_call = None
+                for fc in result["function_calls"]:
+                    if fc["name"] == "generate_playwright_script":
+                        script_call = fc
+                        break
+                
+                if script_call:
+                    # Use function call arguments
+                    script_result = self._generate_playwright_script_from_function_call(
+                        user_query, script_context, result["function_calls"]
+                    )
+                else:
+                    # Generate script directly with inferred parameters
+                    script_result = self._generate_playwright_script_direct(
+                        user_query, script_context
+                    )
+                
                 result["generated_script"] = script_result
+                
+                # If orchestrator only analyzed without generating, update response
+                if not result.get("response") or "FUNCTION:" in result.get("response", ""):
+                    result["response"] = f"Generated Playwright script based on your request and the application context."
             else:
                 # Get text response
                 result["response"] = response.candidates[0].content.parts[0].text if response.candidates[0].content.parts else ""
@@ -263,18 +296,32 @@ INSTRUCTIONS:
         target_url = args.get("target_url", "")
         steps = args.get("steps", [])
         
+        # Extract URL from context if not provided
+        if not target_url and context:
+            import re
+            url_pattern = r'(https?://[^\s\)]+|www\.[^\s\)]+|[a-zA-Z0-9\-]+\.[a-zA-Z]{2,}[^\s\)]*)'
+            urls = re.findall(url_pattern, context)
+            if urls:
+                target_url = urls[0] if not urls[0].startswith('http') else urls[0]
+        
+        # Build context summary for script generation
+        context_summary = context
+        if len(context) > 2000:
+            # Truncate context but keep important parts
+            context_summary = context[:1500] + "\n\n[Additional context truncated...]"
+        
         prompt = f"""Generate a complete Playwright Python automation script based on the following requirements.
 
 USER REQUEST:
 {user_request}
 
 CONTEXT FROM DOCUMENTATION/CODE:
-{context}
+{context_summary}
 
 SCRIPT TYPE: {script_type}
 TARGET: {target_url}
 STEPS TO PERFORM:
-{chr(10).join(f'- {step}' for step in steps) if steps else 'Derive from user request'}
+{chr(10).join(f'- {step}' for step in steps) if steps else 'Derive from user request and context'}
 
 REQUIREMENTS:
 1. Use Playwright Python API (from playwright.sync_api import sync_playwright)
@@ -321,9 +368,20 @@ Generate ONLY the Python script code, no explanations before or after."""
     
     def _generate_playwright_script_direct(self, user_request: str, context: str) -> str:
         """Generate Playwright script directly from user request."""
+        # Infer script type from user request
+        script_type = "interaction"
+        if "test" in user_request.lower() or "testing" in user_request.lower():
+            script_type = "testing"
+        elif "scrape" in user_request.lower() or "scraping" in user_request.lower():
+            script_type = "web_scraping"
+        elif "form" in user_request.lower() or "fill" in user_request.lower():
+            script_type = "form_filling"
+        elif "navigate" in user_request.lower() or "navigation" in user_request.lower():
+            script_type = "navigation"
+        
         return self._generate_playwright_script_from_function_call(
             user_request, context, 
-            [{"name": "generate_playwright_script", "args": {"user_request": user_request, "script_type": "interaction"}}]
+            [{"name": "generate_playwright_script", "args": {"user_request": user_request, "script_type": script_type}}]
         )
     
     def generate_playwright_script(self, user_request: str, context: Optional[str] = None,

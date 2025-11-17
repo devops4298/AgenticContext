@@ -174,7 +174,14 @@ class RAGPipeline:
         return True
 
     def load_from_cache(self, expected_folder_path: Optional[str] = None) -> bool:
+        """
+        Load from cache. If expected_folder_path is provided, validate that cached index
+        was created from the same folder. If None, load any existing cache (for auto-loading).
+        
+        Returns True if cache was loaded successfully, False if cache doesn't match or doesn't exist.
+        """
         if expected_folder_path:
+            # Validation mode: check if cache matches expected folder
             expected_abs = os.path.abspath(expected_folder_path)
             
             if not os.path.exists(self.cfg.index_metadata_path):
@@ -199,6 +206,7 @@ class RAGPipeline:
             except Exception as e:
                 self.logger.warning("Failed to read index metadata: %s. Skipping cache.", e)
                 return False
+        # If expected_folder_path is None, we're in auto-load mode - just load any existing cache
         
         if not os.path.exists(self.cfg.metadata_path):
             return False
