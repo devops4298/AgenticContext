@@ -1,9 +1,30 @@
+# Environment files
 .env
 .env.*
-./agentic-rag/.venv/
-./agentic-rag/chroma_db/
-./agentic-rag/.env
-./agentic-rag/*.pyc
-./agentic-rag/__pycache__/
-./agentic-rag/.DS_Store
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# macOS system files
 .DS_Store
+**/.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project specific
+./agentic-rag/chroma_db/
